@@ -1,4 +1,4 @@
-"""Command line: check a campaign directory, or trace one member.
+"""Command line: check a campaign directory, trace one member, or write synthetic data.
 
 Exit codes for check: 0 no findings, 1 at least one finding, 2 an input file is wrong.
 """
@@ -12,6 +12,7 @@ from collections import Counter
 from pathlib import Path
 
 from .checks import RULES, run_checks
+from .generate import generate, write_dataset
 from .model import InputError, load_ledger
 from .trace import member_timeline
 
@@ -55,6 +56,22 @@ def _trace(args) -> int:
     return 0
 
 
+def _generate(args) -> int:
+    try:
+        dataset = generate(args.seed, members=args.members, reps=args.reps, plant=not args.no_plant)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    write_dataset(dataset, Path(args.out))
+    ledger = dataset.ledger
+    print(
+        f"wrote {len(ledger.attempts)} attempts, {len(ledger.writebacks)} write-backs, "
+        f"{len(ledger.suppressions)} suppression entries to {args.out}; "
+        f"{len(dataset.planted)} planted defects listed in planted.json"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="call-ledger-audit", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -68,6 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
     trace.add_argument("--dir", required=True)
     trace.add_argument("--member", required=True)
     trace.set_defaults(run=_trace)
+
+    gen = commands.add_parser("generate", help="write a seeded synthetic dataset, with planted defects unless --no-plant")
+    gen.add_argument("--seed", type=int, required=True)
+    gen.add_argument("--out", required=True, help="directory to write; created if missing")
+    gen.add_argument("--members", type=int, default=150, help="ordinary members (default 150)")
+    gen.add_argument("--reps", type=int, default=3, help="times each of the 25 defect variants is planted (default 3)")
+    gen.add_argument("--no-plant", action="store_true", help="clean traffic and boundary cases only")
+    gen.set_defaults(run=_generate)
     return parser
 
 
