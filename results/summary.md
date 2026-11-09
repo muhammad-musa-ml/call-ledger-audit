@@ -2,6 +2,8 @@
 
 Command: `python scripts/reproduce.py`. Seeds 1 to 20. Each dataset has 150 ordinary members and the boundary cases; the planted runs add 3 copies of each of 25 defect variants (75 planted defects per dataset). Every dataset is written to disk and read back before it is checked.
 
+Generated with Python 3.13. The standard random module does not promise the same draws across versions, so the dataset sizes below can differ on another Python; the table does not.
+
 ## Planted defects: 20 datasets
 
 Rows per dataset, smallest to largest: attempts 388 to 425, write-backs 295 to 336, suppression entries 53 to 66.

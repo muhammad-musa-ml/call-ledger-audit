@@ -10,6 +10,7 @@ disk and read back through the loader, so the file formats are part of what is m
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tempfile
 from collections import Counter
@@ -34,6 +35,17 @@ def run_one(seed: int, plant: bool, scratch: Path):
     write_dataset(dataset, directory)
     ledger, policy = load_ledger(directory)
     return dataset, ledger, run_checks(ledger, policy)
+
+
+def python_line(text: str) -> str:
+    """The 'Generated with Python X.Y' words of a summary, or an empty string."""
+    found = re.search(r"Generated with Python \d+\.\d+", text)
+    return found.group(0) if found else ""
+
+
+def stable_lines(text: str) -> list[str]:
+    """The lines that do not depend on the Python version's random draws."""
+    return [line for line in text.splitlines() if not line.startswith(("Rows per dataset", "Generated with Python"))]
 
 
 def span(values) -> str:
@@ -83,6 +95,9 @@ def render() -> str:
         f"and the boundary cases; the planted runs add {REPS} copies of each of {variants} defect variants "
         f"({variants * REPS} planted defects per dataset). Every dataset is written to disk and read back before it is checked.",
         "",
+        f"Generated with Python {sys.version_info.major}.{sys.version_info.minor}. The standard random module does not promise the same "
+        "draws across versions, so the dataset sizes below can differ on another Python; the table does not.",
+        "",
         f"## Planted defects: {len(SEEDS)} datasets",
         "",
         f"Rows per dataset, smallest to largest: {dims('planted')}.",
@@ -119,11 +134,15 @@ def main() -> int:
         if not OUT.is_file():
             print(f"{OUT} does not exist", file=sys.stderr)
             return 1
-        if OUT.read_text(encoding="utf-8") != text:
-            print("results/summary.md differs from a fresh run; run scripts/reproduce.py and review the diff", file=sys.stderr)
-            return 1
-        print("results/summary.md matches a fresh run")
-        return 0
+        committed = OUT.read_text(encoding="utf-8")
+        if committed == text:
+            print("results/summary.md matches a fresh run")
+            return 0
+        if python_line(committed) != python_line(text) and stable_lines(committed) == stable_lines(text):
+            print("results/summary.md came from another Python version; the table and the findings match, only the dataset sizes differ")
+            return 0
+        print("results/summary.md differs from a fresh run; run scripts/reproduce.py and review the diff", file=sys.stderr)
+        return 1
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text(text, encoding="utf-8", newline="\n")
     print(text)

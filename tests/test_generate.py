@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from call_ledger_audit.checks import RULES, run_checks
+from call_ledger_audit.checks import RULES, Finding, run_checks
 from call_ledger_audit.cli import main
 from call_ledger_audit.generate import PLANTED, generate, score, write_dataset
 from call_ledger_audit.model import Ledger, load_ledger
@@ -67,28 +67,43 @@ def test_the_files_load_back_to_the_same_ledger(tmp_path):
     assert policy == dataset.policy
 
 
-def test_the_clean_part_really_holds_the_boundary_cases():
-    """Without these the clean dataset would pass any check that is merely lenient."""
-    dataset = generate(2, plant=False)
+def test_the_boundary_cases_are_there_on_their_own_with_no_random_traffic():
+    """members=0 leaves only the deliberate boundary calls, so nothing here can be satisfied by chance."""
+    dataset = generate(2, members=0, plant=False)
     attempts = dataset.ledger.attempts
-    clocks = {local(a).time() for a in attempts}
-    assert time(8, 0, 0) in clocks and time(20, 59, 59) in clocks
-    days = {(local(a).date().isoformat(), a.tz) for a in attempts}
-    assert ("2026-03-08", "America/Chicago") in days and ("2026-11-01", "America/Chicago") in days
+    assert run_checks(dataset.ledger, dataset.policy) == []
+    clocks = {(local(a).time(), a.tz) for a in attempts}
+    assert (time(8, 0, 0), "America/Chicago") in clocks and (time(20, 59, 59), "America/Los_Angeles") in clocks
+    # Phoenix at 20:30 in July: inside there, and one hour past the close in a zone with daylight saving.
+    phoenix = [a for a in attempts if a.tz == "America/Phoenix"]
+    assert [local(a).time() for a in phoenix] == [time(20, 30, 0)]
+    assert local(phoenix[0]).date().isoformat() == "2026-07-15"
+    # Both clock-change days, at both ends of the window, in Chicago.
+    chicago = sorted((local(a).date().isoformat(), local(a).time()) for a in attempts if a.tz == "America/Chicago")
+    for day in ("2026-03-08", "2026-11-01"):
+        assert len([1 for d, _ in chicago if d == day]) == 2
+    assert ("2026-03-08", time(8, 30)) in chicago and ("2026-03-08", time(20, 30)) in chicago
+    assert ("2026-11-01", time(8, 15)) in chicago and ("2026-11-01", time(20, 45)) in chicago
     by_attempt = {a.attempt_id: a for a in attempts}
     delays = {w.written_at - by_attempt[w.attempt_id].started_at for w in dataset.ledger.writebacks}
     assert timedelta(minutes=30) in delays
-    opt_outs = {a.attempt_id: a for a in attempts if a.disposition == "opt_out"}
     entry_delays = {
-        s.added_at - a.started_at for s in dataset.ledger.suppressions for a in opt_outs.values()
-        if s.member_id == a.member_id
+        s.added_at - by_attempt[s.attempt_id].started_at for s in dataset.ledger.suppressions if s.attempt_id
     }
     assert timedelta(minutes=60) in entry_delays and timedelta(0) in entry_delays
     per_member = Counter(a.member_id for a in attempts)
     assert max(per_member.values()) == 6  # five in three days, then one exactly 7 days after the first
+    sixth = [a for a in attempts if per_member[a.member_id] == 6]
+    first, last = min(sixth, key=lambda a: a.started_at), max(sixth, key=lambda a: a.started_at)
+    assert last.started_at - first.started_at == timedelta(days=7)
 
 
-def test_a_planted_defect_is_reported_on_the_attempt_the_label_names():
+def test_the_generated_phone_numbers_cannot_be_real_ones():
+    dataset = generate(3, members=20)
+    assert {a.phone[:8] for a in dataset.ledger.attempts} == {"+1000555"}
+
+
+def test_a_label_names_an_attempt_in_the_ledger_or_an_id_that_is_not_there_for_an_orphan():
     dataset = generate(6, members=10, reps=1)
     by_id = {a.attempt_id: a for a in dataset.ledger.attempts}
     for rule, attempt_id, variant in dataset.planted:
@@ -108,10 +123,22 @@ def test_each_variant_trips_only_its_own_rule():
 
 
 def test_size_limits():
-    with pytest.raises(ValueError, match="members must be 1 to"):
-        generate(1, members=0)
+    with pytest.raises(ValueError, match="members must be 0 to"):
+        generate(1, members=-1)
     with pytest.raises(ValueError, match="reps 1 to"):
         generate(1, reps=21)
+
+
+def test_score_reports_what_was_missed_and_what_was_reported_on_the_wrong_attempt():
+    """score() is what the results table rests on, so show that it can say something other than 'none'."""
+    planted = [("outside_window", "a1", "v"), ("suppressed", "a2", "v")]
+    right = [Finding("outside_window", "a1", "m1", ""), Finding("suppressed", "a2", "m2", "")]
+    assert score(right, planted) == (set(), set())
+    wrong = [Finding("outside_window", "a1", "m1", ""), Finding("suppressed", "a3", "m3", ""),
+             Finding("no_disclosure", "a1", "m1", "")]
+    missed, extra = score(wrong, planted)
+    assert missed == {("suppressed", "a2")}
+    assert extra == {("suppressed", "a3"), ("no_disclosure", "a1")}
 
 
 def test_generate_then_check_from_the_command_line(tmp_path, capsys):
@@ -122,4 +149,4 @@ def test_generate_then_check_from_the_command_line(tmp_path, capsys):
     assert main(["generate", "--seed", "11", "--members", "30", "--no-plant", "--out", str(tmp_path / "clean")]) == 0
     capsys.readouterr()
     assert main(["check", "--dir", str(tmp_path / "clean")]) == 0
-    assert main(["generate", "--seed", "1", "--members", "0", "--out", str(tmp_path / "bad")]) == 2
+    assert main(["generate", "--seed", "1", "--members=-1", "--out", str(tmp_path / "bad")]) == 2

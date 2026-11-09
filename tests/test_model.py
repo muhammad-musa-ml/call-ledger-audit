@@ -1,5 +1,5 @@
 import json
-from datetime import date, time, timezone
+from datetime import date, time, timedelta
 
 import pytest
 
@@ -29,11 +29,15 @@ def write_lines(path, rows):
     return path
 
 
-def test_timestamp_z_and_offset_give_the_same_instant():
+def test_timestamp_z_and_offset_give_the_same_instant_both_held_in_utc():
     z = parse_timestamp("2026-03-02T15:04:05Z", "t")
     offset = parse_timestamp("2026-03-02T09:04:05-06:00", "t")
     assert z == offset
-    assert z.tzinfo is timezone.utc or z.utcoffset().total_seconds() == 0
+    # Equality compares instants, so also pin that the offset input was converted: the
+    # checks and the printouts format these values and expect UTC.
+    assert offset.utcoffset() == timedelta(0)
+    assert offset.isoformat() == "2026-03-02T15:04:05+00:00"
+    assert z.isoformat() == "2026-03-02T15:04:05+00:00"
 
 
 def test_timestamp_without_offset_is_refused():
@@ -90,6 +94,41 @@ def test_invalid_json_names_the_line(tmp_path):
         load_attempts(path)
 
 
+def test_phone_formatting_is_removed_so_two_exports_match(tmp_path):
+    rows = [
+        {**GOOD_ATTEMPT, "attempt_id": "a1", "phone": "+1 (312) 555-0101"},
+        {**GOOD_ATTEMPT, "attempt_id": "a2", "phone": "+1.312.555.0101"},
+        {**GOOD_ATTEMPT, "attempt_id": "a3", "phone": "+13125550101"},
+    ]
+    attempts = load_attempts(write_lines(tmp_path / "a.jsonl", rows))
+    assert {a.phone for a in attempts} == {"+13125550101"}
+    entry = {"phone": "(312) 555-0101", "added_at": "2026-03-02T15:10:00Z", "source": "dnc"}
+    (suppression,) = load_suppressions(write_lines(tmp_path / "s.jsonl", [entry]))
+    assert suppression.phone == "3125550101"  # no + was given, none is invented
+
+
+@pytest.mark.parametrize("phone", ["N/A", "12345", "+1 312 555 0101 ext 4", "+1234567890123456"])
+def test_a_value_that_is_not_a_phone_number_is_refused(tmp_path, phone):
+    with pytest.raises(InputError, match="phone must be 7 to 15 digits"):
+        load_attempts(write_lines(tmp_path / "a.jsonl", [{**GOOD_ATTEMPT, "phone": phone}]))
+
+
+def test_a_byte_order_mark_is_tolerated_and_utf16_is_refused_with_exit_2_wording(tmp_path):
+    bom = tmp_path / "bom.jsonl"
+    bom.write_bytes(b"\xef\xbb\xbf" + (json.dumps(GOOD_ATTEMPT) + "\n").encode("utf-8"))
+    assert len(load_attempts(bom)) == 1
+    utf16 = tmp_path / "utf16.jsonl"
+    utf16.write_bytes((json.dumps(GOOD_ATTEMPT) + "\n").encode("utf-16"))
+    with pytest.raises(InputError, match="utf16.jsonl: not UTF-8 text"):
+        load_attempts(utf16)
+    policy = tmp_path / "policy.json"
+    policy.write_bytes(b"\xef\xbb\xbf" + b'{"max_attempts_per_day": 3}')
+    assert load_policy(policy).max_attempts_per_day == 3
+    policy.write_bytes('{"max_attempts_per_day": 3}'.encode("utf-16"))
+    with pytest.raises(InputError, match="policy.json: not UTF-8 text"):
+        load_policy(policy)
+
+
 def test_missing_file_is_an_input_error(tmp_path):
     with pytest.raises(InputError, match="file not found"):
         load_attempts(tmp_path / "nope.jsonl")
@@ -112,8 +151,10 @@ def test_writeback_loads_amount_and_date(tmp_path):
     "change, message",
     [
         ({"outcome": "paid"}, "outcome must be one of"),
-        ({"promise_amount": "125"}, "promise_amount must be a number or null"),
-        ({"promise_amount": True}, "promise_amount must be a number or null"),
+        ({"promise_amount": "125"}, "promise_amount must be a finite number or null"),
+        ({"promise_amount": True}, "promise_amount must be a finite number or null"),
+        ({"promise_amount": float("nan")}, "promise_amount must be a finite number or null"),
+        ({"promise_amount": float("inf")}, "promise_amount must be a finite number or null"),
         ({"promise_date": "03/06/2026"}, "promise_date is not YYYY-MM-DD"),
         ({"promise_date": 20260306}, "promise_date must be YYYY-MM-DD or null"),
     ],

@@ -24,7 +24,7 @@ from .model import Attempt, Ledger, Policy, Suppression, Writeback
 ZONES = ("America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix")
 # Each fortnight holds one US clock change: 2026-03-08 and 2026-11-01.
 FORTNIGHTS = (date(2026, 3, 2), date(2026, 10, 26))
-# Phone numbers are +1312555 plus a four-digit counter, so a dataset holds under 10000 members.
+# Phone numbers are +1000555 plus a four-digit counter, so a dataset holds under 10000 members.
 # 4000 ordinary members, 20 repetitions of 25 variants and the boundary cases fit under that.
 MAX_MEMBERS = 4000
 MAX_REPS = 20
@@ -71,7 +71,7 @@ class _Build:
 
     def member(self) -> tuple[str, str]:
         self._members += 1
-        return f"m{self._members:04d}", f"+1312555{self._members:04d}"
+        return f"m{self._members:04d}", f"+1000555{self._members:04d}"  # area code 000 does not exist
 
     def attempt(self, member, phone, tz, instant, disposition, disclosure=None) -> Attempt:
         self._attempts += 1
@@ -171,7 +171,8 @@ def _clean_boundaries(b: _Build) -> None:
     for clock in (time(8, 15), time(20, 45)):
         b.call(member, phone, tz, local_to_utc(date(2026, 11, 1), clock, tz), "no_answer")
     b.call(*solo(new_york), local_to_utc(date(2026, 11, 1), time(8, 0, 0), new_york))
-    b.call(*solo(phoenix), local_to_utc(date(2026, 7, 15), time(8, 0, 0), phoenix))
+    # Phoenix has no daylight saving: 20:30 there in July would be 21:30, outside, in a zone that has it.
+    b.call(*solo(phoenix), local_to_utc(date(2026, 7, 15), time(20, 30, 0), phoenix))
     # Two attempts in one local day: the daily cap exactly.
     member, phone, tz = solo(denver)
     for clock in (time(9, 0), time(15, 0)):
@@ -283,9 +284,10 @@ def _plant(b: _Build, rule: str, variant: str) -> None:
 
 
 def generate(seed: int, members: int = 150, reps: int = 3, plant: bool = True) -> Dataset:
-    """One dataset. members is the number of ordinary members; reps is how many times each defect variant is planted."""
-    if not 1 <= members <= MAX_MEMBERS or not 1 <= reps <= MAX_REPS:
-        raise ValueError(f"members must be 1 to {MAX_MEMBERS} and reps 1 to {MAX_REPS}")
+    """One dataset. members is the number of ordinary members (0 leaves only the boundary cases);
+    reps is how many times each defect variant is planted."""
+    if not 0 <= members <= MAX_MEMBERS or not 1 <= reps <= MAX_REPS:
+        raise ValueError(f"members must be 0 to {MAX_MEMBERS} and reps 1 to {MAX_REPS}")
     rng = random.Random(seed)
     policy = Policy()
     b = _Build(rng, policy)

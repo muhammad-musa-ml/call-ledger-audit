@@ -81,7 +81,11 @@ def test_window_follows_daylight_saving_in_both_directions():
 
 
 def test_window_without_daylight_saving_in_phoenix():
-    # Phoenix stays at UTC-7: 15:30Z is 08:30 all year.
+    # Phoenix stays at UTC-7 all year. In July 14:30Z is 07:30 there (outside); a zone with daylight
+    # saving such as Denver would read it as 08:30 (inside), so this line tells the two apart.
+    july = attempt(tz="America/Phoenix", when="2026-07-15T14:30:00Z")
+    assert ids(outside_window(ledger([july]), POLICY)) == ["a1"]
+    assert outside_window(ledger([replace(july, tz="America/Denver")]), POLICY) == []
     for when in ("2026-01-15T15:30:00Z", "2026-07-15T15:30:00Z"):
         assert outside_window(ledger([attempt(tz="America/Phoenix", when=when)]), POLICY) == []
 
@@ -137,6 +141,14 @@ def test_an_entry_that_names_the_attempt_is_not_held_against_it_but_is_against_l
     other_call = replace(own, attempt_id="a9")
     assert ids(suppressed(ledger([opt_out], suppressions=[nameless]), POLICY)) == ["a1"]
     assert ids(suppressed(ledger([opt_out], suppressions=[other_call]), POLICY)) == ["a1"]
+
+
+def test_the_detail_does_not_depend_on_which_of_two_equal_entries_comes_first():
+    entries = [entry(member="m1", source="opt_out_call"), entry(member="m1", source="dnc")]
+    rows = [attempt(when="2026-03-04T16:00:00Z")]
+    forward = suppressed(ledger(rows, suppressions=entries), POLICY)
+    backward = suppressed(ledger(rows, suppressions=entries[::-1]), POLICY)
+    assert forward == backward and "dnc entry added" in forward[0].detail
 
 
 def test_suppression_detail_names_the_source():
@@ -248,6 +260,17 @@ def test_writeback_exactly_at_the_deadline_is_on_time_and_one_second_later_is_no
 def test_the_earliest_writeback_counts():
     rows = [writeback(when="2026-03-03T17:00:00Z"), writeback(when="2026-03-03T16:10:00Z")]
     assert writeback_deadline(ledger([attempt()], rows), POLICY) == []
+
+
+def test_a_writeback_stamped_before_its_call_began_is_reported_for_any_disposition():
+    early = writeback(when="2026-03-03T15:59:59Z")
+    found = writeback_deadline(ledger([attempt()], [early]), POLICY)
+    assert ids(found) == ["a1"] and "is before the call began 2026-03-03T16:00:00Z" in found[0].detail
+    assert len(found) == 1  # not also a deadline finding
+    quiet = attempt(disposition="no_answer", disclosure=False)
+    assert ids(writeback_deadline(ledger([quiet], [writeback(when="2026-03-03T15:00:00Z")]), POLICY)) == ["a1"]
+    # A write-back at the very start of the call is not before it.
+    assert writeback_deadline(ledger([attempt()], [writeback(when="2026-03-03T16:00:00Z")]), POLICY) == []
 
 
 def test_only_the_policys_dispositions_need_a_writeback():
@@ -368,8 +391,19 @@ def test_an_entry_from_before_the_call_counts_and_a_phone_only_entry_counts():
     assert opt_out_not_suppressed(ledger([attempt(**OPT_OUT)], suppressions=[by_phone]), POLICY) == []
 
 
-def test_only_opt_out_calls_are_checked_here():
-    assert opt_out_not_suppressed(ledger([attempt()]), POLICY) == []
+def test_only_opt_outs_are_checked_here():
+    assert opt_out_not_suppressed(ledger([attempt()], [writeback()]), POLICY) == []
+
+
+def test_an_opt_out_that_exists_only_in_the_writeback_still_needs_a_suppression_entry():
+    connected = attempt()  # the call's own disposition says connected
+    said_stop = writeback(outcome="opt_out")
+    found = opt_out_not_suppressed(ledger([connected], [said_stop]), POLICY)
+    assert ids(found) == ["a1"] and "opt-out in the write-back, no suppression entry by" in found[0].detail
+    on_time = entry(member="m1", when="2026-03-03T16:30:00Z", source="opt_out_call")
+    assert opt_out_not_suppressed(ledger([connected], [said_stop], [on_time]), POLICY) == []
+    # The mismatch itself is still its own finding.
+    assert ids(outcome_mismatch(ledger([connected], [said_stop]), POLICY)) == ["a1"]
 
 
 # run_checks
@@ -394,6 +428,15 @@ def test_findings_come_back_ordered_by_attempt_id_then_rule():
         ("b", "outside_window"),
         ("b", "writeback_deadline"),
     ]
+
+
+def test_findings_that_tie_on_attempt_and_rule_are_ordered_by_detail_not_by_row_order():
+    ghost_a = promise(amount=None, attempt_id="ghost")
+    ghost_b = promise(date=None, attempt_id="ghost")
+    forward = run_checks(ledger([], [ghost_a, ghost_b]), POLICY)
+    backward = run_checks(ledger([], [ghost_b, ghost_a]), POLICY)
+    assert forward == backward
+    assert [f.detail for f in forward if f.rule == "promise_incomplete"] == ["no amount", "no date"]
 
 
 def test_every_rule_reports_under_its_own_name():

@@ -44,7 +44,10 @@ def _check(args) -> int:
     if findings:
         print("by rule: " + ", ".join(f"{rule} {n}" for rule, n in report["counts"].items() if n))
     if args.json:
-        Path(args.json).write_text(json.dumps(report, indent=1, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        try:
+            Path(args.json).write_text(json.dumps(report, indent=1, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        except OSError as error:
+            raise InputError(f"{args.json}: {error.strerror or error}") from None
     return 1 if findings else 0
 
 

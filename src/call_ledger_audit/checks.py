@@ -1,7 +1,9 @@
 """The nine checks. Each takes a Ledger and a Policy and returns findings.
 
-A check reads only the ledger. It never guesses what a client's rules should
-be: every limit comes from the policy.
+A check reads only the ledger and the policy. It never guesses what a client's
+rules should be: the limits it applies come from the policy. Two things are
+fixed in the code: the 7-day window is 7 x 24 hours, and the table of outcomes
+each disposition can produce is ALLOWED_OUTCOMES.
 """
 
 from __future__ import annotations
@@ -74,7 +76,7 @@ def suppressed(ledger: Ledger, policy: Policy) -> list[Finding]:
         entries = by_member.get(attempt.member_id, []) + by_phone.get(attempt.phone, [])
         active = [e for e in entries if e.added_at <= attempt.started_at and e.attempt_id != attempt.attempt_id]
         if active:
-            first = min(active, key=lambda e: e.added_at)
+            first = min(active, key=lambda e: (e.added_at, e.source))
             found.append(
                 Finding(
                     "suppressed",
@@ -134,23 +136,34 @@ def _writebacks_by_attempt(ledger: Ledger):
 
 
 def writeback_deadline(ledger: Ledger, policy: Policy) -> list[Finding]:
-    """An attempt that needs a write-back has none by the deadline.
+    """A write-back is stamped before its call began, or an attempt that needs one has none by the deadline.
 
-    Which dispositions need one is policy.writeback_dispositions. A write-back at
-    exactly the deadline is on time.
+    The deadline runs from the attempt's started_at; there is no end-of-call field. Which
+    dispositions need a write-back is policy.writeback_dispositions. A write-back at exactly
+    the deadline is on time. A write-back stamped before the call is reported for any disposition.
     """
     index = _writebacks_by_attempt(ledger)
     found = []
     for attempt in ledger.attempts:
+        written = index.get(attempt.attempt_id, [])
+        first = min((w.written_at for w in written), default=None)
+        if first is not None and first < attempt.started_at:
+            found.append(
+                Finding(
+                    "writeback_deadline",
+                    attempt.attempt_id,
+                    attempt.member_id,
+                    f"first write-back {first:%Y-%m-%dT%H:%M:%SZ} is before the call began "
+                    f"{attempt.started_at:%Y-%m-%dT%H:%M:%SZ}",
+                )
+            )
+            continue
         if attempt.disposition not in policy.writeback_dispositions:
             continue
         deadline = attempt.started_at + timedelta(minutes=policy.writeback_deadline_minutes)
-        written = index.get(attempt.attempt_id, [])
-        if not written:
+        if first is None:
             found.append(Finding("writeback_deadline", attempt.attempt_id, attempt.member_id, "no write-back"))
-            continue
-        first = min(w.written_at for w in written)
-        if first > deadline:
+        elif first > deadline:
             found.append(
                 Finding(
                     "writeback_deadline",
@@ -187,7 +200,7 @@ def outcome_mismatch(ledger: Ledger, policy: Policy) -> list[Finding]:
     for attempt in ledger.attempts:
         written = index.get(attempt.attempt_id, [])
         reasons = []
-        for w in sorted(written, key=lambda w: w.written_at):
+        for w in sorted(written, key=lambda w: (w.written_at, w.outcome)):
             if w.outcome not in ALLOWED_OUTCOMES[attempt.disposition]:
                 reasons.append(f"{attempt.disposition} call written back as {w.outcome}")
         if len({w.outcome for w in written}) > 1:
@@ -217,25 +230,28 @@ def promise_incomplete(ledger: Ledger, policy: Policy) -> list[Finding]:
 
 
 def opt_out_not_suppressed(ledger: Ledger, policy: Policy) -> list[Finding]:
-    """A member opted out on a call and no suppression entry exists by the deadline.
+    """A member opted out, on the call or in a write-back, and no suppression entry exists by the deadline.
 
     An entry added before the call also counts: the member was already suppressed.
     An entry exactly at the deadline is on time.
     """
     by_member, by_phone = _suppression_index(ledger)
+    index = _writebacks_by_attempt(ledger)
     found = []
     for attempt in ledger.attempts:
-        if attempt.disposition != "opt_out":
+        on_call = attempt.disposition == "opt_out"
+        if not on_call and not any(w.outcome == "opt_out" for w in index.get(attempt.attempt_id, [])):
             continue
         deadline = attempt.started_at + timedelta(minutes=policy.suppression_deadline_minutes)
         entries = by_member.get(attempt.member_id, []) + by_phone.get(attempt.phone, [])
         if not any(e.added_at <= deadline for e in entries):
+            where = "on the call" if on_call else "in the write-back"
             found.append(
                 Finding(
                     "opt_out_not_suppressed",
                     attempt.attempt_id,
                     attempt.member_id,
-                    f"opt-out on the call, no suppression entry by {deadline:%Y-%m-%dT%H:%M:%SZ}",
+                    f"opt-out {where}, no suppression entry by {deadline:%Y-%m-%dT%H:%M:%SZ}",
                 )
             )
     return found
@@ -255,6 +271,6 @@ RULES = {
 
 
 def run_checks(ledger: Ledger, policy: Policy) -> list[Finding]:
-    """Every check, findings ordered by attempt id and rule."""
+    """Every check, findings ordered by attempt id, rule and detail, so row order never shows."""
     findings = [f for check in RULES.values() for f in check(ledger, policy)]
-    return sorted(findings, key=lambda f: (f.attempt_id, f.rule))
+    return sorted(findings, key=lambda f: (f.attempt_id, f.rule, f.detail))

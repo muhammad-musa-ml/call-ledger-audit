@@ -12,6 +12,8 @@ refused, because every check compares instants and a bare time has none.
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from pathlib import Path
@@ -107,21 +109,39 @@ def _choice(row: dict, key: str, allowed: tuple[str, ...], where: str) -> str:
     return value
 
 
+def _phone(row: dict, where: str, *, optional: bool = False) -> str | None:
+    """A phone number with spaces, dashes, dots and brackets removed, so two exports that format
+    one number differently still match. What is left must be 7 to 15 digits with an optional +."""
+    value = _text(row, "phone", where, optional=optional)
+    if value is None:
+        return None
+    cleaned = re.sub(r"[\s\-().]", "", value)
+    if not re.fullmatch(r"\+?\d{7,15}", cleaned):
+        raise _fail(where, f"phone must be 7 to 15 digits with an optional leading +, got {value!r}")
+    return cleaned
+
+
 def _rows(path: Path):
     if not path.is_file():
         raise InputError(f"{path}: file not found")
-    with path.open(encoding="utf-8") as handle:
-        for number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            where = f"{path.name} line {number}"
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise _fail(where, f"not valid JSON ({error.msg})") from None
-            if not isinstance(row, dict):
-                raise _fail(where, "each line must be a JSON object")
-            yield row, where
+    try:
+        # utf-8-sig: PowerShell and Excel write a byte-order mark, which would break the first line.
+        with path.open(encoding="utf-8-sig") as handle:
+            for number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                where = f"{path.name} line {number}"
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise _fail(where, f"not valid JSON ({error.msg})") from None
+                if not isinstance(row, dict):
+                    raise _fail(where, "each line must be a JSON object")
+                yield row, where
+    except UnicodeDecodeError:
+        raise InputError(f"{path.name}: not UTF-8 text (a file written as UTF-16 by a shell redirect looks like this)") from None
+    except OSError as error:
+        raise InputError(f"{path}: {error.strerror or error}") from None
 
 
 def load_attempts(path: Path) -> list[Attempt]:
@@ -135,7 +155,7 @@ def load_attempts(path: Path) -> list[Attempt]:
         tz = _text(row, "tz", where)
         try:
             ZoneInfo(tz)
-        except (ZoneInfoNotFoundError, ValueError):
+        except (ZoneInfoNotFoundError, ValueError, OSError):
             raise _fail(where, f"unknown time zone {tz!r}") from None
         disclosure = row.get("disclosure_played")
         if not isinstance(disclosure, bool):
@@ -144,7 +164,7 @@ def load_attempts(path: Path) -> list[Attempt]:
             Attempt(
                 attempt_id=attempt_id,
                 member_id=_text(row, "member_id", where),
-                phone=_text(row, "phone", where),
+                phone=_phone(row, where),
                 tz=tz,
                 started_at=parse_timestamp(row.get("started_at"), f"{where} started_at"),
                 disposition=_choice(row, "disposition", DISPOSITIONS, where),
@@ -158,8 +178,10 @@ def load_writebacks(path: Path) -> list[Writeback]:
     writebacks: list[Writeback] = []
     for row, where in _rows(path):
         amount = row.get("promise_amount")
-        if amount is not None and (isinstance(amount, bool) or not isinstance(amount, (int, float))):
-            raise _fail(where, "promise_amount must be a number or null")
+        if amount is not None and (
+            isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount)
+        ):
+            raise _fail(where, "promise_amount must be a finite number or null")
         raw_date = row.get("promise_date")
         promise_date = None
         if raw_date is not None:
@@ -185,7 +207,7 @@ def load_suppressions(path: Path) -> list[Suppression]:
     suppressions: list[Suppression] = []
     for row, where in _rows(path):
         member_id = _text(row, "member_id", where, optional=True)
-        phone = _text(row, "phone", where, optional=True)
+        phone = _phone(row, where, optional=True)
         if member_id is None and phone is None:
             raise _fail(where, "needs a member_id, a phone or both")
         suppressions.append(
@@ -223,9 +245,13 @@ def load_policy(path: Path | None) -> Policy:
         raise InputError(f"{path}: file not found")
     where = path.name
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as error:
         raise _fail(where, f"not valid JSON ({error.msg})") from None
+    except UnicodeDecodeError:
+        raise _fail(where, "not UTF-8 text") from None
+    except OSError as error:
+        raise InputError(f"{path}: {error.strerror or error}") from None
     if not isinstance(raw, dict):
         raise _fail(where, "must be a JSON object")
     known = {

@@ -34,11 +34,14 @@ def test_clean_directory_exits_0(tmp_path, capsys):
 
 
 def test_a_finding_exits_1_prints_it_and_writes_the_report(tmp_path, capsys):
-    write_dir(tmp_path, [{**ATTEMPT, "started_at": "2026-03-04T03:00:00Z"}], [WRITEBACK])
+    late_night = {**ATTEMPT, "started_at": "2026-03-04T03:00:00Z"}  # 21:00:00 in Chicago
+    write_dir(tmp_path, [late_night], [{**WRITEBACK, "written_at": "2026-03-04T03:05:00Z"}])
     report_path = tmp_path / "report.json"
     assert main(["check", "--dir", str(tmp_path), "--json", str(report_path)]) == 1
-    out = capsys.readouterr().out
-    assert "outside_window" in out and "a1" in out and "by rule: outside_window 1" in out
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[-1] == "by rule: outside_window 1"
+    assert lines[-2] == "1 attempts, 1 write-backs, 0 suppression entries: 1 finding(s)"
+    assert lines[0].split()[:2] == ["outside_window", "a1"]
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["counts"]["outside_window"] == 1 and report["counts"]["suppressed"] == 0
     assert report["findings"][0]["attempt_id"] == "a1"
@@ -87,7 +90,17 @@ def test_trace_of_an_unknown_member_exits_2(tmp_path, capsys):
     assert "no attempts for member 'nobody'" in capsys.readouterr().err
 
 
-def test_installed_entry_point_style_run_returns_the_exit_code(tmp_path):
+def test_a_file_the_loader_cannot_decode_or_a_report_path_that_cannot_be_written_exits_2(tmp_path, capsys):
+    write_dir(tmp_path, [ATTEMPT], [WRITEBACK])
+    (tmp_path / "attempts.jsonl").write_bytes((json.dumps(ATTEMPT) + "\n").encode("utf-16"))
+    assert main(["check", "--dir", str(tmp_path)]) == 2
+    assert "attempts.jsonl: not UTF-8 text" in capsys.readouterr().err
+    write_dir(tmp_path, [ATTEMPT], [WRITEBACK])
+    assert main(["check", "--dir", str(tmp_path), "--json", str(tmp_path / "no-such-folder" / "report.json")]) == 2
+    assert "no-such-folder" in capsys.readouterr().err
+
+
+def test_running_the_module_returns_the_exit_code(tmp_path):
     write_dir(tmp_path, [{**ATTEMPT, "started_at": "2026-03-04T03:00:00Z"}], [WRITEBACK])
     env = {**os.environ, "PYTHONPATH": SRC}
     done = subprocess.run(
