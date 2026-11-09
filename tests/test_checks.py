@@ -126,6 +126,19 @@ def test_unrelated_member_is_not_suppressed():
     assert suppressed(ledger([other], suppressions=entries), POLICY) == []
 
 
+def test_an_entry_that_names_the_attempt_is_not_held_against_it_but_is_against_later_calls():
+    opt_out = attempt(attempt_id="a1", disposition="opt_out", when="2026-03-03T16:00:00Z")
+    later = attempt(attempt_id="a2", when="2026-03-05T16:00:00Z")
+    own = entry(member="m1", when="2026-03-03T16:00:00Z", source="opt_out_call")
+    own = replace(own, attempt_id="a1")
+    assert ids(suppressed(ledger([opt_out, later], suppressions=[own]), POLICY)) == ["a2"]
+    # The same entry without the name, or naming another call, is held against the call.
+    nameless = replace(own, attempt_id=None)
+    other_call = replace(own, attempt_id="a9")
+    assert ids(suppressed(ledger([opt_out], suppressions=[nameless]), POLICY)) == ["a1"]
+    assert ids(suppressed(ledger([opt_out], suppressions=[other_call]), POLICY)) == ["a1"]
+
+
 def test_suppression_detail_names_the_source():
     found = suppressed(
         ledger([attempt(when="2026-03-04T16:00:00Z")], suppressions=[entry(member="m1", source="opt_out_call")]),

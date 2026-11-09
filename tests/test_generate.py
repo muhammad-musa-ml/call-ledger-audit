@@ -11,7 +11,7 @@ from call_ledger_audit.generate import PLANTED, generate, score, write_dataset
 from call_ledger_audit.model import Ledger, load_ledger
 
 FILES = ("attempts.jsonl", "writebacks.jsonl", "suppressions.jsonl", "policy.json", "planted.json")
-SEEDS = range(1, 11)
+SEEDS = range(1, 21)  # the seeds scripts/reproduce.py runs; seed 19 once drew a 0-second opt-out delay
 
 
 def local(attempt):
@@ -83,7 +83,7 @@ def test_the_clean_part_really_holds_the_boundary_cases():
         s.added_at - a.started_at for s in dataset.ledger.suppressions for a in opt_outs.values()
         if s.member_id == a.member_id
     }
-    assert timedelta(minutes=60) in entry_delays
+    assert timedelta(minutes=60) in entry_delays and timedelta(0) in entry_delays
     per_member = Counter(a.member_id for a in attempts)
     assert max(per_member.values()) == 6  # five in three days, then one exactly 7 days after the first
 

@@ -63,12 +63,16 @@ def _suppression_index(ledger: Ledger):
 
 
 def suppressed(ledger: Ledger, policy: Policy) -> list[Finding]:
-    """The attempt began at or after a suppression entry for the member or the phone."""
+    """The attempt began at or after a suppression entry for the member or the phone.
+
+    An entry that names the attempt as the call that produced it is not held against
+    that call: a platform may stamp an opt-out with the call's own start time.
+    """
     by_member, by_phone = _suppression_index(ledger)
     found = []
     for attempt in ledger.attempts:
         entries = by_member.get(attempt.member_id, []) + by_phone.get(attempt.phone, [])
-        active = [e for e in entries if e.added_at <= attempt.started_at]
+        active = [e for e in entries if e.added_at <= attempt.started_at and e.attempt_id != attempt.attempt_id]
         if active:
             first = min(active, key=lambda e: e.added_at)
             found.append(

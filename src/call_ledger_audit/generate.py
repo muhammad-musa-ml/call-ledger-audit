@@ -85,8 +85,8 @@ class _Build:
         when = attempt.started_at + timedelta(seconds=seconds)
         self.writebacks.append(Writeback(attempt.attempt_id, when, outcome, amount, promise_date))
 
-    def suppress(self, member, phone, instant, source) -> None:
-        self.suppressions.append(Suppression(member, phone, instant, source))
+    def suppress(self, member, phone, instant, source, attempt_id=None) -> None:
+        self.suppressions.append(Suppression(member, phone, instant, source, attempt_id))
 
     def call(self, member, phone, tz, instant, disposition="connected", *, wb=300, outcome=None,
              amount=None, promise_date=None, suppress_after=600, disclosure=None) -> Attempt:
@@ -102,7 +102,7 @@ class _Build:
             if wb is not None:
                 self.writeback(made, wb, outcome or "opt_out", amount, promise_date)
             if suppress_after is not None:
-                self.suppress(member, phone, instant + timedelta(seconds=suppress_after), "opt_out_call")
+                self.suppress(member, phone, instant + timedelta(seconds=suppress_after), "opt_out_call", made.attempt_id)
         elif disposition in ("no_answer", "voicemail") and outcome is not None and wb is not None:
             self.writeback(made, wb, outcome, amount, promise_date)
         return made
@@ -140,7 +140,7 @@ def _clean_member(b: _Build) -> None:
         elif disposition == "opt_out":
             b.writeback(last, rng.randint(60, deadline), "opt_out")
             wait = rng.randint(0, b.policy.suppression_deadline_minutes * 60)
-            b.suppress(member, phone, instant + timedelta(seconds=wait), "opt_out_call")
+            b.suppress(member, phone, instant + timedelta(seconds=wait), "opt_out_call", last.attempt_id)
             break
         elif rng.random() < 0.7:
             b.writeback(last, rng.randint(60, deadline), "no_contact")
@@ -186,6 +186,8 @@ def _clean_boundaries(b: _Build) -> None:
     b.call(*solo(chicago), local_to_utc(base, time(10, 0, 0), chicago), wb=deadline)
     b.call(*solo(chicago), local_to_utc(base, time(10, 0, 0), chicago), "opt_out",
            suppress_after=b.policy.suppression_deadline_minutes * 60)
+    # An opt-out entry stamped at the call's own start, naming the call, is not held against it.
+    b.call(*solo(chicago), local_to_utc(base, time(10, 30, 0), chicago), "opt_out", suppress_after=0)
     # A do-not-call entry one second after the call does not reach back to it.
     member, phone, tz = solo(chicago)
     call = b.call(member, phone, tz, local_to_utc(base, time(11, 0, 0), tz))
@@ -333,7 +335,8 @@ def write_dataset(dataset: Dataset, directory: Path) -> None:
             for w in dataset.ledger.writebacks
         ],
         "suppressions.jsonl": [
-            {"member_id": s.member_id, "phone": s.phone, "added_at": _stamp(s.added_at), "source": s.source}
+            {"member_id": s.member_id, "phone": s.phone, "added_at": _stamp(s.added_at), "source": s.source,
+             "attempt_id": s.attempt_id}
             for s in dataset.ledger.suppressions
         ],
     }

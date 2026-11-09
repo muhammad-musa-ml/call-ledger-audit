@@ -52,6 +52,7 @@ class Suppression:
     phone: str | None
     added_at: datetime
     source: str
+    attempt_id: str | None = None  # the call that produced the entry, when the export says so
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,7 @@ def load_suppressions(path: Path) -> list[Suppression]:
                 phone=phone,
                 added_at=parse_timestamp(row.get("added_at"), f"{where} added_at"),
                 source=_choice(row, "source", SUPPRESSION_SOURCES, where),
+                attempt_id=_text(row, "attempt_id", where, optional=True),
             )
         )
     return suppressions

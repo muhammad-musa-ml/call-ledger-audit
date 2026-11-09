@@ -133,6 +133,16 @@ def test_suppression_needs_a_member_or_a_phone(tmp_path):
     assert entry.member_id is None and entry.phone == "+13125550101"
 
 
+def test_suppression_may_name_the_call_that_produced_it(tmp_path):
+    row = {"member_id": "m1", "added_at": "2026-03-02T15:10:00Z", "source": "opt_out_call", "attempt_id": "a1"}
+    (entry,) = load_suppressions(write_lines(tmp_path / "s.jsonl", [row]))
+    assert entry.attempt_id == "a1"
+    (nameless,) = load_suppressions(write_lines(tmp_path / "s.jsonl", [{**row, "attempt_id": None}]))
+    assert nameless.attempt_id is None
+    with pytest.raises(InputError, match="attempt_id must be a non-empty string"):
+        load_suppressions(write_lines(tmp_path / "s.jsonl", [{**row, "attempt_id": 7}]))
+
+
 def test_policy_defaults_when_no_file():
     assert load_policy(None) == Policy()
 
