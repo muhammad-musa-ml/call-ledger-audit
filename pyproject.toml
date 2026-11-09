@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "call-ledger-audit"
+version = "0.1.0"
+description = "Audit an outbound voice-agent campaign's call log against its write-backs and suppression list."
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = ["tzdata; sys_platform == 'win32'"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+call-ledger-audit = "call_ledger_audit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
